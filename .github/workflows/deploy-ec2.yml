@@ -37,6 +37,8 @@ jobs:
               "echo \"=== Starting deployment ===\"",
               "echo \"Timestamp: $(date)\"",
               "cd ${{ env.DEPLOY_PATH }} || { echo \"Failed to change to deploy directory\"; exit 1; }",
+              "echo \"=== Configuring Git safe directory ===\"",
+              "git config --global --add safe.directory ${{ env.DEPLOY_PATH }}",
               "echo \"=== Stopping Apache ===\"",
               "sudo systemctl stop apache2 || echo \"Apache already stopped\"",
               "echo \"=== Fetching latest changes ===\"",
