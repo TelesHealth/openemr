@@ -15,6 +15,7 @@ jobs:
   deploy:
     name: Deploy to EC2 Ubuntu 24.04
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
       - name: Configure AWS credentials
@@ -69,20 +70,48 @@ jobs:
               "sudo systemctl status apache2 --no-pager || true",
               "echo \"=== Deployment completed successfully! ===\"",
               "echo \"Timestamp: $(date)\""
-            ]' \
-            --region "${{ env.AWS_REGION }}" \
+            ],executionTimeout=["7200"]' \
             --timeout-seconds 600 \
+            --region "${{ env.AWS_REGION }}" \
             --query 'Command.CommandId' \
             --output text)
           
           echo "Command ID: $COMMAND_ID"
           echo "COMMAND_ID=$COMMAND_ID" >> $GITHUB_ENV
-          echo "Waiting for command to complete..."
           
-          aws ssm wait command-executed \
-            --command-id "$COMMAND_ID" \
-            --instance-id "${{ env.EC2_INSTANCE_ID }}" \
-            --region "${{ env.AWS_REGION }}" || true
+          # Custom polling loop for long-running command
+          MAX_ATTEMPTS=144  # 2 hours (144 * 50 seconds)
+          ATTEMPT=0
+          
+          echo "Monitoring deployment progress..."
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            STATUS=$(aws ssm list-commands \
+              --command-id "$COMMAND_ID" \
+              --region "${{ env.AWS_REGION }}" \
+              --query "Commands[0].Status" \
+              --output text)
+            
+            echo "Status: $STATUS (Check $ATTEMPT/$MAX_ATTEMPTS)"
+            
+            if [[ "$STATUS" == "Success" ]]; then
+              echo "✅ Deployment completed successfully!"
+              exit 0
+            elif [[ "$STATUS" == "Failed" ]] || [[ "$STATUS" == "TimedOut" ]] || [[ "$STATUS" == "Cancelled" ]]; then
+              echo "❌ Deployment failed with status: $STATUS"
+              exit 1
+            elif [[ "$STATUS" == "Pending" ]] || [[ "$STATUS" == "InProgress" ]]; then
+              sleep 50
+              ATTEMPT=$((ATTEMPT + 1))
+            else
+              echo "⚠️  Unknown status: $STATUS"
+              sleep 30
+              ATTEMPT=$((ATTEMPT + 1))
+            fi
+          done
+          
+          echo "❌ Polling timeout reached after 2 hours"
+          exit 1
 
       - name: Get deployment output
         if: always()
@@ -105,20 +134,6 @@ jobs:
             --region "${{ env.AWS_REGION }}" \
             --query 'StandardErrorContent' \
             --output text || echo "No errors"
-          
-          STATUS=$(aws ssm get-command-invocation \
-            --command-id "${{ env.COMMAND_ID }}" \
-            --instance-id "${{ env.EC2_INSTANCE_ID }}" \
-            --region "${{ env.AWS_REGION }}" \
-            --query 'Status' \
-            --output text)
-          
-          echo "Command Status: $STATUS"
-          
-          if [ "$STATUS" != "Success" ]; then
-            echo "Deployment failed with status: $STATUS"
-            exit 1
-          fi
 
       - name: Connect via SSM (manual step info)
         if: failure()
